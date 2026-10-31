@@ -153,19 +153,22 @@ jobs:
               --title "Halo C.E con trucos - OpenCE ${{ steps.version.outputs.ref }} (#${{ github.run_number }})" \
               --notes "$(printf '%s\n\n## Cambios\n%s' "$NOTAS" "$CAMBIOS")" \
               --latest
-          elif [ "${{ github.event.repository.private }}" != "true" ]; then
-            # Las pruebas son privadas: en el repositorio publico no se publican
-            # (van en el repositorio privado de pruebas)
-            echo "Prueba en el repositorio publico: no se publica en Releases."
           else
+            # Las pruebas son privadas: se publican como BORRADOR (draft), que en
+            # Releases solo ve el dueno del repositorio (y quien tenga permiso de
+            # escritura). Se borran los borradores de prueba anteriores.
+            for viejo in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,name \
+                --jq '.[] | select(.isDraft and (.name | startswith("PRUEBA"))) | .tagName'); do
+              gh release delete "$viejo" --repo "$GITHUB_REPOSITORY" --yes || true
+            done
             APK="HaloCE-trucos-PRUEBA-${{ steps.version.outputs.ref }}.apk"
             cp src/dist/halo-android-release/app-release.apk "$APK"
             gh release create "prueba-$(date +%Y%m%d-%H%M)" "$APK" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "PRUEBA ($GITHUB_REF_NAME) - OpenCE ${{ steps.version.outputs.ref }} (#${{ github.run_number }})" \
-              --notes "$(printf 'Version de PRUEBA de la rama %s: puede tener errores.\n\n%s\n\n## Cambios\n%s' "$GITHUB_REF_NAME" "$NOTAS" "$CAMBIOS")" \
-              --prerelease
+              --notes "$(printf 'Version de PRUEBA de la rama %s: puede tener errores. Borrador privado: solo lo ve el dueno del repositorio.\n\n%s\n\n## Cambios\n%s' "$GITHUB_REF_NAME" "$NOTAS" "$CAMBIOS")" \
+              --draft
           fi
 
       # Si algo falla (por ejemplo, una version nueva de OpenCE que rompe el parche),
