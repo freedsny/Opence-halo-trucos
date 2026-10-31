@@ -156,10 +156,10 @@ jobs:
           else
             # Las pruebas son privadas: se publican como BORRADOR (draft), que en
             # Releases solo ve el dueno del repositorio (y quien tenga permiso de
-            # escritura). Se borran los borradores de prueba anteriores.
+            # escritura). Se borran las pruebas anteriores (borradores y las viejas publicas).
             for viejo in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,name \
-                --jq '.[] | select(.isDraft and (.name | startswith("PRUEBA"))) | .tagName'); do
-              gh release delete "$viejo" --repo "$GITHUB_REPOSITORY" --yes || true
+                --jq '.[] | select((.isDraft or .isPrerelease) and (.name | startswith("PRUEBA"))) | .tagName'); do
+              gh release delete "$viejo" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
             done
             APK="HaloCE-trucos-PRUEBA-${{ steps.version.outputs.ref }}.apk"
             cp src/dist/halo-android-release/app-release.apk "$APK"
