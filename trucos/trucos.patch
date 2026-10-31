@@ -798,15 +798,18 @@
  		get_hud_state(player->local_player_index)->last_weapon_index = weapon_index;
 --- a/source/interface/hud_nav_points.c
 +++ b/source/interface/hud_nav_points.c
-@@ -101,6 +101,7 @@
+@@ -99,8 +99,10 @@
+ /* ---------- headers */
+ 
  #include "cseries/cseries.h"
++#include <stdio.h> /* port: the guide arrow's log in the test build */
  #include "cseries/errors.h"
  #include "game_state.h"
 +#include "game/game_allegiance.h"
  #include "game/game_engine.h"
  #include "game/players.h"
  #include "networking/network_connection.h"
-@@ -124,6 +125,9 @@
+@@ -124,6 +126,9 @@
  #include "scenario/scenario_definitions.h"
  #include "units/units.h"
  #include "network_coop.h" /* port: port/linux/game/network_coop.c */
@@ -816,7 +819,7 @@
  
  /* ---------- constants */
  
-@@ -675,6 +679,10 @@
+@@ -675,6 +680,10 @@
  	return render_type;
  }
  
@@ -827,7 +830,7 @@
  void custom_render_nav_point(
  	short local_player_index,
  	real_point3d const *position_pointer,
-@@ -701,6 +709,10 @@
+@@ -701,6 +710,10 @@
  		unit_get_camera_position(local_player_get_player_index(local_player_index) == NONE ? NONE : player_get(local_player_get_player_index(local_player_index))->unit_index, &cam_pos);
  		distance = distance3d(&cam_pos, position_pointer);
  	}
@@ -838,7 +841,7 @@
  
  	if (distance > 15.f)
  	{
-@@ -807,6 +819,310 @@
+@@ -807,6 +820,346 @@
  	return;
  }
  
@@ -942,12 +945,13 @@
 +#define GUIDE_ROUTE_MINIMUM_TICKS 3
 +#define GUIDE_ROUTE_CORNER_REACHED 0.5f
 +#define GUIDE_ROUTE_TARGET_MOVED 0.5f
-+#define GUIDE_ROUTE_ARROW_HEIGHT 0.25f
++#define GUIDE_ROUTE_ARROW_HEIGHT 0.4f
 +#define GUIDE_ROUTE_MAXIMUM_STEPS 4
 +
 +struct hud_port_guide_route_datum
 +{
 +	boolean valid;
++	char status; /* (the test build's log) */
 +	long time;
 +	short structure_bsp_index;
 +	real_point3d target;
@@ -998,13 +1002,14 @@
 +{
 +	struct path_input input;
 +	struct path_result path;
-+	real_point3d start, goal;
++	real_point3d start = { 0 }, goal = { 0 };
 +	long start_surface_index = NONE;
 +	long goal_surface_index = NONE;
 +	struct biped_datum *biped = biped_try_and_get(unit_index);
 +	boolean found = FALSE;
 +
 +	route->step_count = 0;
++	route->status = 'S';
 +	/* the player's floor: a biped on foot keeps it (biped_find_pathfinding_surface_index,
 +	what the AI walks its own bipeds from; only read here, the hud does not change the
 +	game); in a seat or when it is not known yet, the floor under the player */
@@ -1026,8 +1031,10 @@
 +	}
 +	if (!hud_port_guide_floor(target, 5.f, &goal, &goal_surface_index))
 +	{
++		route->status = 'T';
 +		return FALSE;
 +	}
++	route->status = 'P';
 +
 +	path_input_new(&input, 0.2f, FALSE, biped && biped->object.parent_object_index!=NONE ?
 +		biped->object.parent_object_index : unit_index);
@@ -1044,6 +1051,11 @@
 +		/* not all the way (the search ran out, or no way): the part of the way that
 +		comes closest to the target, if it is not where the player is */
 +		hud_port_guide_path_state.destination.target_radius = 10000.f;
++		route->status = 'C';
++	}
++	else if (hud_port_guide_path_state.closest_node_index==NONE)
++	{
++		route->status = 'F';
 +	}
 +	if (path_state_build_path(&hud_port_guide_path_state, &path) && path.valid && path.step_count>0)
 +	{
@@ -1054,6 +1066,28 @@
 +			route->steps[route->step_count++] = path.steps[step_index].point;
 +		}
 +		found = route->step_count>0;
++	}
++	if (!found && route->status!='F')
++	{
++		route->status = route->status=='C' ? 'X' : 'B';
++	}
++
++	/* the test build's log (adb logcat -s halo): S no floor under the player, T none
++	under the target, P the whole way, C part of the way, F and X no way, B the
++	way not built */
++	{
++		static long last_log_time = -1000;
++		static char last_status = 0;
++		long time = game_time_get();
++
++		if (route->status!=last_status || time-last_log_time>=90 || time<last_log_time)
++		{
++			fprintf(stderr, "guia: %c pasos=%d jugador=(%.1f %.1f %.1f) sup=%ld objetivo=(%.1f %.1f %.1f) sup=%ld bsp=%d\n",
++				route->status, route->step_count, start.x, start.y, start.z, start_surface_index,
++				goal.x, goal.y, goal.z, goal_surface_index, global_structure_bsp_index_get());
++			last_status = route->status;
++			last_log_time = time;
++		}
 +	}
 +
 +	return found;
@@ -1135,11 +1169,16 @@
 +			target_object_index : NONE;
 +		unit_get_camera_position(unit_index, &camera_position);
 +		hud_port_nav_distance_override = distance3d(&camera_position, &target);
++		/* a corner of the route is drawn as in sight (the bumps of the ground hide
++		it): the hidden kind is left to the target itself, when there is no way */
 +		custom_render_nav_point(
 +			local_player_index,
 +			&point,
 +			0,
-+			hud_get_nav_point_render_type(local_player_index, &head_position, &point, point_object_index));
++			point_object_index==target_object_index &&
++				point.x==target.x && point.y==target.y && point.z==target.z ?
++				hud_get_nav_point_render_type(local_player_index, &head_position, &point, point_object_index) :
++				0);
 +		hud_port_nav_distance_override = -1.f;
 +	}
 +
@@ -1149,7 +1188,7 @@
  void hud_render_nav_points(
  	short local_player_index)
  {
-@@ -902,6 +1218,8 @@
+@@ -902,6 +1255,8 @@
  				nav_point->nav_index,
  				nav_point->screen_type);
  		}
