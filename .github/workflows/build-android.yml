@@ -135,7 +135,9 @@ jobs:
         with:
           name: halo-android-release
           path: src/dist/halo-android-release
-          retention-days: 7
+          # las pruebas solo un dia: en un repositorio publico cualquiera con cuenta
+          # de GitHub puede descargar un artifact
+          retention-days: ${{ github.ref_name == 'main' && 7 || 1 }}
 
       - name: Publicar el APK en Releases
         env:
@@ -151,6 +153,10 @@ jobs:
               --title "Halo C.E con trucos - OpenCE ${{ steps.version.outputs.ref }} (#${{ github.run_number }})" \
               --notes "$(printf '%s\n\n## Cambios\n%s' "$NOTAS" "$CAMBIOS")" \
               --latest
+          elif [ "${{ github.event.repository.private }}" != "true" ]; then
+            # Las pruebas son privadas: en el repositorio publico no se publican
+            # (van en el repositorio privado de pruebas)
+            echo "Prueba en el repositorio publico: no se publica en Releases."
           else
             APK="HaloCE-trucos-PRUEBA-${{ steps.version.outputs.ref }}.apk"
             cp src/dist/halo-android-release/app-release.apk "$APK"

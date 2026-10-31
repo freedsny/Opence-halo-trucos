@@ -838,7 +838,7 @@
  
  	if (distance > 15.f)
  	{
-@@ -807,6 +819,308 @@
+@@ -807,6 +819,310 @@
  	return;
  }
  
@@ -939,6 +939,7 @@
 +in the air, or too far for the search), it points straight at the target as
 +before. Distances are in world units (3.048 meters). */
 +#define GUIDE_ROUTE_REFRESH_TICKS 10
++#define GUIDE_ROUTE_MINIMUM_TICKS 3
 +#define GUIDE_ROUTE_CORNER_REACHED 0.5f
 +#define GUIDE_ROUTE_TARGET_MOVED 0.5f
 +#define GUIDE_ROUTE_ARROW_HEIGHT 0.25f
@@ -1077,7 +1078,8 @@
 +	object_get_origin(unit_index, &origin);
 +	if (!route->valid || time<route->time || time-route->time>=GUIDE_ROUTE_REFRESH_TICKS ||
 +		route->structure_bsp_index!=bsp_index ||
-+		distance_squared3d(&route->target, target)>GUIDE_ROUTE_TARGET_MOVED*GUIDE_ROUTE_TARGET_MOVED)
++		(time-route->time>=GUIDE_ROUTE_MINIMUM_TICKS &&
++			distance_squared3d(&route->target, target)>GUIDE_ROUTE_TARGET_MOVED*GUIDE_ROUTE_TARGET_MOVED))
 +	{
 +		route->valid = TRUE;
 +		route->time = time;
@@ -1147,7 +1149,7 @@
  void hud_render_nav_points(
  	short local_player_index)
  {
-@@ -902,6 +1216,8 @@
+@@ -902,6 +1218,8 @@
  				nav_point->nav_index,
  				nav_point->screen_type);
  		}
@@ -1158,7 +1160,7 @@
  	game_engine_render_nav_points(local_player_index);
 --- a/source/hs/hs_runtime.c
 +++ b/source/hs/hs_runtime.c
-@@ -3416,3 +3416,488 @@
+@@ -3416,3 +3416,508 @@
  
  	return FALSE;
  }
@@ -1455,9 +1457,12 @@
 +	return;
 +}
 +
-+static void hs_port_guide_volume_center(
++/* the point of a volume nearest the player: where the player walks into it (a
++volume can be big, its middle far over a wall or the sea) */
++static void hs_port_guide_volume_point(
 +	short trigger_volume_index,
-+	real_point3d *center)
++	real_point3d const *player,
++	real_point3d *point)
 +{
 +	struct scenario_trigger_volume *volume = TAG_BLOCK_GET_ELEMENT(
 +		&global_scenario_get()->trigger_volumes,
@@ -1466,20 +1471,21 @@
 +
 +	if (volume->type==_scenario_trigger_volume_type_axis_aligned)
 +	{
-+		center->x = (volume->bounds.x0+volume->bounds.x1)/2.f;
-+		center->y = (volume->bounds.y0+volume->bounds.y1)/2.f;
-+		center->z = (volume->bounds.z0+volume->bounds.z1)/2.f;
++		point->x = PIN(player->x, volume->bounds.x0, volume->bounds.x1);
++		point->y = PIN(player->y, volume->bounds.y0, volume->bounds.y1);
++		point->z = PIN(player->z, volume->bounds.z0, volume->bounds.z1);
 +	}
 +	else
 +	{
 +		real_matrix4x3 matrix;
-+		real_point3d middle;
++		real_point3d local;
 +
-+		middle.x = volume->extents.i/2.f;
-+		middle.y = volume->extents.j/2.f;
-+		middle.z = volume->extents.k/2.f;
 +		matrix4x3_from_point_and_vectors(&matrix, &volume->position, &volume->forward, &volume->up);
-+		matrix4x3_transform_point(&matrix, &middle, center);
++		matrix4x3_inverse_transform_point(&matrix, player, &local);
++		local.x = PIN(local.x, 0.f, volume->extents.i);
++		local.y = PIN(local.y, 0.f, volume->extents.j);
++		local.z = PIN(local.z, 0.f, volume->extents.k);
++		matrix4x3_transform_point(&matrix, &local, point);
 +	}
 +
 +	return;
@@ -1503,14 +1509,14 @@
 +		trigger_volume_index<global_scenario_get()->trigger_volumes.count &&
 +		!scenario_trigger_volume_test_point(trigger_volume_index, choice->player))
 +	{
-+		real_point3d center;
++		real_point3d point;
 +		real distance_squared;
 +
-+		hs_port_guide_volume_center(trigger_volume_index, &center);
-+		distance_squared = distance_squared3d(choice->player, &center);
++		hs_port_guide_volume_point(trigger_volume_index, choice->player, &point);
++		distance_squared = distance_squared3d(choice->player, &point);
 +		if (!choice->found || distance_squared<choice->best_distance_squared)
 +		{
-+			choice->target = center;
++			choice->target = point;
 +			choice->best_distance_squared = distance_squared;
 +			choice->found = TRUE;
 +		}
@@ -1566,6 +1572,7 @@
 +	long threads[HS_PORT_GUIDE_MAXIMUM_SCRIPTS];
 +	long thread_index;
 +	short order, fallback = NONE;
++	real best_distance_squared = 0.f;
 +	boolean found = FALSE;
 +
 +	if (!hs_runtime_globals.initialized || !hs_thread_data || global_scenario_index==NONE)
@@ -1617,8 +1624,11 @@
 +		}
 +	}
 +
-+	/* the first waiting script from the furthest place on; else the last before it */
-+	for (order = 0; order<hs_port_guide.count && !found; order++)
++	/* of the scripts waiting from the furthest place on, the nearest volume: a
++	level's main script waits for the next part of the level while the part's own
++	scripts wait for the steps on the way there (The Silent Cartographer's beach,
++	first its rocks, camp and arch); else the last before the furthest place */
++	for (order = 0; order<hs_port_guide.count; order++)
 +	{
 +		if (threads[order]!=NONE)
 +		{
@@ -1628,9 +1638,21 @@
 +			{
 +				if (order>=hs_port_guide.progress)
 +				{
-+					found = hs_port_guide_thread_target(thread, player, target);
++					real_point3d candidate;
++
++					if (hs_port_guide_thread_target(thread, player, &candidate))
++					{
++						real distance_squared = distance_squared3d(player, &candidate);
++
++						if (!found || distance_squared<best_distance_squared)
++						{
++							*target = candidate;
++							best_distance_squared = distance_squared;
++							found = TRUE;
++						}
++					}
 +				}
-+				else
++				else if (!found)
 +				{
 +					real_point3d candidate;
 +
