@@ -85,6 +85,19 @@ jobs:
           /usr/bin/python3 ../repo/trucos/regenerar_menus.py
           # El nombre de la app en el celular: Halo C.E
           sed -i 's#<string name="app_name">Halo</string>#<string name="app_name">Halo C.E</string>#' port/android/app/src/main/res/values/strings.xml
+          # Las pruebas son otra app (com.halo.decomp.pruebas, "Halo PRUEBA"): se
+          # instalan al lado de la normal sin reemplazarla. Tiene su propia carpeta
+          # (/sdcard/Android/data/com.halo.decomp.pruebas/files) para el juego y
+          # las partidas.
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            sed -i 's#applicationId "com.halo.decomp"#applicationId "com.halo.decomp.pruebas"#' port/android/app/build.gradle
+            sed -i 's#com.halo.decomp.update#com.halo.decomp.pruebas.update#g' \
+              port/android/app/src/main/AndroidManifest.xml \
+              port/android/app/src/main/java/com/halo/decomp/UpdateProvider.java
+            sed -i 's#<string name="app_name">Halo C.E</string>#<string name="app_name">Halo PRUEBA</string>#' port/android/app/src/main/res/values/strings.xml
+            grep -n 'applicationId' port/android/app/build.gradle
+            grep -rn 'pruebas.update' port/android/app/src/main
+          fi
           grep -n 'app_name' port/android/app/src/main/res/values/strings.xml
           git status --short
 
